@@ -130,7 +130,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         // (Copies matches of up to 32 bytes)
         const_copy::<TOKEN_MATCH_LENGTH, false>(dest_src, dest_ptr, match_start, 0);
 
-        if match_start + match_length >= output_offset
+        if offset <= TOKEN_MATCH_LENGTH
         {
             // the unconditional copy above copied some bytes
             // don't let it go into waste
@@ -144,7 +144,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
             // that is intentional.
             loop
             {
-                fixed_copy_within::<8>(output, src_position, dest_position);
+                fixed_copy_within::<TOKEN_MATCH_LENGTH>(output, src_position, dest_position);
 
                 src_position += offset;
                 dest_position += offset;
@@ -155,12 +155,11 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
                 }
             }
             // overlapping match
-            // copy_rep_matches(output, match_start, output_offset, match_length);
         }
-        else if match_length > TOKEN_MATCH_LENGTH
+        else if match_length >= TOKEN_MATCH_LENGTH
         {
-            // we had copied TOKEN_MATCH_LENGTH bytes initially, do not recopy them
-            let mut tmp_src_pos = TOKEN_MATCH_LENGTH + offset;
+            // // we had copied TOKEN_MATCH_LENGTH bytes initially, do not recopy them
+            let mut tmp_src_pos = TOKEN_MATCH_LENGTH + match_start;
             let mut tmp_dst_pos = TOKEN_MATCH_LENGTH;
 
             let mut ml_copy = match_length;
@@ -184,6 +183,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
 
                 ml_copy = ml_copy.wrapping_sub(TOKEN_MATCH_LENGTH);
             }
+            //output.copy_within(match_start..match_start + match_length, output_offset);
         }
 
         output_offset += match_length;
@@ -191,19 +191,6 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
 
     return output_offset;
 }
-
-// #[inline(always)]
-// pub fn copy_rep_matches(dest: &mut [u8], offset: usize, dest_offset: usize, length: usize)
-// {
-//     let diff = dest_offset - offset + 1;
-//
-//     for window in Cell::from_mut(&mut dest[offset..dest_offset + length + 2])
-//         .as_slice_of_cells()
-//         .windows(diff)
-//     {
-//         window.last().unwrap().set(window[0].get());
-//     }
-// }
 
 pub fn const_copy<const SIZE: usize, const SAFE: bool>(
     src: &[u8], dest: &mut [u8], src_offset: usize, dest_offset: usize
