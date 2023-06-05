@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use crate::{LITERAL_BITS, MIN_MATCH, ML_BITS, OFFSET_BIT};
 
 const TOKEN_LITERAL: usize = 32;
@@ -65,9 +63,9 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
             if literal_length >= TOKEN_LITERAL
             {
                 // copy literals longer than 16
-                let mut src_offset_copy = input_offset + TOKEN_LITERAL;
+                let mut tmp_src_offset = input_offset + TOKEN_LITERAL;
+                let mut tmp_dst_offset = output_offset + TOKEN_LITERAL;
 
-                let mut tmp_dest_copy = TOKEN_LITERAL + output_offset;
                 let mut ll_copy = literal_length;
 
                 'literals: loop
@@ -75,11 +73,11 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
                     const_copy::<TOKEN_LITERAL, false>(
                         input,
                         output,
-                        src_offset_copy,
-                        tmp_dest_copy
+                        tmp_src_offset,
+                        tmp_dst_offset
                     );
-                    src_offset_copy += TOKEN_LITERAL;
-                    tmp_dest_copy += TOKEN_LITERAL;
+                    tmp_src_offset += TOKEN_LITERAL;
+                    tmp_dst_offset += TOKEN_LITERAL;
 
                     if ll_copy < TOKEN_LITERAL + TOKEN_LITERAL
                     {
@@ -137,19 +135,19 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
             // Increment the position we are in by the number of correct bytes
             // currently copied
             let mut src_position = match_start + offset;
-            let mut dest_position = output_offset + offset;
+            let mut dst_position = output_offset + offset;
 
             // loop copying offset bytes in place
             // notice this loop does fixed copies but increments in offset bytes :)
             // that is intentional.
             loop
             {
-                fixed_copy_within::<TOKEN_MATCH_LENGTH>(output, src_position, dest_position);
+                fixed_copy_within::<TOKEN_MATCH_LENGTH>(output, src_position, dst_position);
 
                 src_position += offset;
-                dest_position += offset;
+                dst_position += offset;
 
-                if dest_position > output_offset + match_length
+                if dst_position > output_offset + match_length
                 {
                     break;
                 }
