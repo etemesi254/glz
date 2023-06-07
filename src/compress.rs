@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::compress::hash_chains::compress_block;
 use crate::compress::hash_chains::hash_chains::HashChains;
-use crate::constants::{COMPRESSION_LEVEL, DEPTH_STRIDE, HASH_CHAINS_LOG};
+use crate::constants::{COMPRESSION_LEVEL, DEPTH_STRIDE, HASH_CHAINS_BUCKET_LOG};
 
 mod hash_chains;
 
@@ -23,8 +23,8 @@ pub fn compress(input_file: String, output_file: String)
     const BLOCK_SIZE: usize = 10 * (1 << 20);
 
     let mut table = HashChains::new(
-        1 << HASH_CHAINS_LOG,
-        HASH_CHAINS_LOG,
+        1 << HASH_CHAINS_BUCKET_LOG,
+        HASH_CHAINS_BUCKET_LOG,
         COMPRESSION_LEVEL * DEPTH_STRIDE
     );
 

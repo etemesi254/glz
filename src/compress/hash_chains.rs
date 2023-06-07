@@ -1,7 +1,7 @@
 use crate::compress::hash_chains::hash_chains::HashChains;
 use crate::compress::EncodeSequence;
 use crate::constants::{
-    LITERAL_BITS, MIN_MATCH, ML_BITS, OFFSET_BIT, TOKEN, UNCOMPRESSED, WINDOW_SIZE
+    GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, TOKEN, UNCOMPRESSED, WINDOW_SIZE
 };
 use crate::utils::copy_literals;
 
@@ -10,8 +10,8 @@ pub mod hash_chains;
 #[inline(always)]
 fn write_token(seq: &EncodeSequence) -> u8
 {
-    debug_assert!(seq.ml >= MIN_MATCH);
-    let ml_length = (seq.ml - MIN_MATCH) as u8;
+    debug_assert!(seq.ml >= GLZ_MIN_MATCH);
+    let ml_length = (seq.ml - GLZ_MIN_MATCH) as u8;
 
     let ml_token = if ml_length >= 7 { 7 } else { ml_length };
     let ll_token = if seq.ll >= 7 { 7 } else { seq.ll as u8 };
@@ -31,7 +31,7 @@ fn compress_sequence(src: &[u8], dest: &mut [u8], dest_position: &mut usize, seq
     let token_byte = write_token(seq);
     let mut extra = *seq;
     extra.ll = extra.ll.wrapping_sub(7);
-    extra.ml = extra.ml.wrapping_sub(7 + MIN_MATCH);
+    extra.ml = extra.ml.wrapping_sub(7 + GLZ_MIN_MATCH);
     extra.ol = extra.ol >> 2;
     dest[*dest_position] = token_byte;
     *dest_position += 1;
@@ -73,14 +73,14 @@ pub fn compress_block(
                 literals_before_match,
             );
 
-            if window_start + WINDOW_SIZE + MIN_MATCH + ml > src.len()
+            if window_start + WINDOW_SIZE + GLZ_MIN_MATCH + ml > src.len()
             {
                 // close to input end
                 break 'match_loop;
             }
 
 
-            if offset != 0 && ml >= usize::from(MIN_MATCH)
+            if offset != 0 && ml >= usize::from(GLZ_MIN_MATCH)
             {
                 // found a match
                 debug_assert!(window_start >= offset);
@@ -115,7 +115,7 @@ pub fn compress_block(
     sequence.ll = literals_before_match;
     sequence.ol = 0;
     sequence.start = window_start - literals_before_match;
-    sequence.ml = MIN_MATCH;
+    sequence.ml = GLZ_MIN_MATCH;
     compress_sequence(src,dest,&mut out_position,&sequence);
     return out_position;
 }

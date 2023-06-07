@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use crate::constants::{HASH_CHAINS_MINIMAL_MATCH, MIN_MATCH};
+use crate::constants::{GLZ_MIN_MATCH, HASH_CHAINS_MINIMAL_MATCH};
 use crate::utils::{count, hash_chains_hash};
 
 pub struct HashChains
@@ -74,7 +74,7 @@ impl HashChains
         let list = self.table.get(hash).unwrap();
         let searches_to_perform = min(list.len(), self.maximum_depth);
 
-        let mut maximum_match_length = MIN_MATCH;
+        let mut maximum_match_length = GLZ_MIN_MATCH;
         let mut max_offset = 0_usize;
         let mut cost = 0;
 
@@ -130,7 +130,7 @@ pub fn estimate_header_cost(literals: usize, ml: usize, offset: usize) -> u32
         l_cost += 2 * u32::from(literals > 0x80);
     }
 
-    let token_match = usize::from(MIN_MATCH) + 7;
+    let token_match = usize::from(GLZ_MIN_MATCH) + 7;
 
     if ml > token_match
     {

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::constants::{LITERAL_BITS, MEM_SIZE, MIN_MATCH, ML_BITS, OFFSET_BIT, SLOP_BYTES};
+use crate::constants::{GLZ_MIN_MATCH, LITERAL_BITS, MEM_SIZE, ML_BITS, OFFSET_BIT, SLOP_BYTES};
 use crate::utils::{const_copy, fixed_copy_within};
 
 const TOKEN_LITERAL: usize = 32;
@@ -49,7 +49,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
 
         // extract bytes from token
         let mut offset = usize::from(token >> OFFSET_BIT) & 0b011;
-        let mut match_length = (usize::from(token >> ML_BITS) & 0b111) + MIN_MATCH;
+        let mut match_length = (usize::from(token >> ML_BITS) & 0b111) + GLZ_MIN_MATCH;
         let mut literal_length = usize::from(token >> LITERAL_BITS) & 0b111;
 
         // increment the input by one to signify we read a token
@@ -119,7 +119,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         // increment the input to point to match
         input_offset += usize::from(consumed_offset);
         // extract the match length
-        if match_length == (7 + MIN_MATCH)
+        if match_length == (7 + GLZ_MIN_MATCH)
         {
             // too long of a match, decode using EncodeMod
             let (ml, b) = decode_encode_mod(&input[input_offset..]);
