@@ -1,101 +1,64 @@
-// //! The token format (control byte) is:
-// //
-// // OOLLLRRR
-// //        └─Literal run length
-// //     └────Match length
-// // └──────Lower bits of match offset
-//
-// use varint_simd::encode;
-//
-// use crate::{LITERAL_BITS, MIN_MATCH, ML_BITS, OFFSET_BIT};
-//
-// pub struct Sequence
-// {
-//     literal_length: u32,
-//     match_length:   usize,
-//     num_seq_bytes:  u8,
-//     offset:         u32
-// }
-//
-// impl Sequence
-// {
-//     pub fn new(literal_length: u32, match_length: u32, offset: u32, num_seq_bytes: u8) -> Sequence
-//     {
-//         Sequence {
-//             literal_length,
-//             match_length,
-//             offset,
-//             num_seq_bytes
-//         }
-//     }
-// }
-//
-// #[inline(always)]
-// pub fn encode_sequence(seq: &Sequence, output: &mut [u8; 64]) -> u8
-// {
-//     // debug_assert!(seq.match_length >= MIN_MATCH);
-//     let mut current_position = 1;
-//     // encode lower bits of match offset
-//     let lower_match_offset = (seq.offset & 0b11) as u8;
-//
-//     // ml token is given by (match length - 3(min_match_length));
-//     let ml_token = (seq.match_length - MIN_MATCH).wrapping_sub(7);
-//     let ll_token = seq.literal_length.wrapping_sub(7);
-//
-//     output[0] = lower_match_offset << OFFSET_BIT;
-//
-//     if seq.match_length >= (7 + MIN_MATCH)
-//     {
-//         // encode and add encode_mod
-//         output[0] |= 7 << ML_BITS;
-//         let extra = encode(ml_token);
-//         // copy the whole var_int
-//         output[1..17].copy_from_slice(&extra.0);
-//         // increase the current position
-//         current_position += extra.1;
-//     }
-//     else
-//     {
-//         // just encode the size
-//         output[0] |= ((seq.match_length - MIN_MATCH) << ML_BITS) as u8;
-//     }
-//     if seq.literal_length < 7
-//     {
-//         output[0] |= (seq.literal_length << LITERAL_BITS) as u8;
-//     }
-//     else
-//     {
-//         output[0] |= 7 << LITERAL_BITS;
-//
-//         // encode using encode_mod
-//         let extra = encode(ll_token);
-//         // copy the whole var_int
-//
-//         // this helps remove the branch below
-//         current_position &= 0b1111;
-//         // copy the whole thing
-//         output[usize::from(current_position)..usize::from(current_position + 16)]
-//             .copy_from_slice(&extra.0);
-//
-//         // increase the current position
-//         current_position += extra.1;
-//     }
-//
-//     // TODO: Add literals here
-//
-//     if seq.offset >= 3
-//     {
-//         let extra = encode(seq.offset >> 2);
-//         // copy the whole var_int
-//
-//         // this helps remove the branch below
-//         current_position &= 0b11111;
-//         // copy the whole thing
-//         output[usize::from(current_position)..usize::from(current_position + 16)]
-//             .copy_from_slice(&extra.0);
-//
-//         // increase the current position
-//         current_position += extra.1;
-//     }
-//     current_position
-// }
+use std::fs::{File, OpenOptions};
+use std::io::Read;
+use std::path::Path;
+use std::time::Instant;
+
+use crate::compress::hash_chains::compress_block;
+use crate::compress::hash_chains::hash_chains::HashChains;
+use crate::constants::{COMPRESSION_LEVEL, DEPTH_STRIDE, HASH_CHAINS_LOG};
+
+mod hash_chains;
+
+#[derive(Copy, Clone, Default, Debug)]
+struct EncodeSequence
+{
+    start: usize,
+    ll:    usize,
+    ml:    usize,
+    ol:    usize
+}
+
+pub fn compress(input_file: String, output_file: String)
+{
+    const BLOCK_SIZE: usize = 10 * (1 << 20);
+
+    let mut table = HashChains::new(
+        1 << HASH_CHAINS_LOG,
+        HASH_CHAINS_LOG,
+        COMPRESSION_LEVEL * DEPTH_STRIDE
+    );
+
+    let p = Path::new(&input_file);
+
+    // allocate and add slack bytes, so that we don't panic in simd_decode
+    let mut max_in = Vec::with_capacity(116777216 + 160);
+    max_in.resize(116777216, 0);
+
+    let mut max_out = Vec::with_capacity(116777216 + 160);
+    max_out.resize(116777216, 0);
+
+    let start = Instant::now();
+    let mut fd = File::open(p).unwrap();
+    let mut out_fd = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&output_file)
+        .unwrap();
+
+    loop
+    {
+        let bytes_read = fd.read(&mut max_in[0..BLOCK_SIZE]).unwrap();
+        if bytes_read == 0
+        {
+            break;
+        }
+        let bytes_written = compress_block(&max_in[..bytes_read], &mut max_out[4..], &mut table);
+        dbg!(bytes_written);
+        table.clear();
+    }
+
+    let end = Instant::now();
+
+    println!("time: {:?}", end - start);
+}
