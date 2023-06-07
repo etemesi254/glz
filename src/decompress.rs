@@ -1,4 +1,10 @@
-use crate::{LITERAL_BITS, MIN_MATCH, ML_BITS, OFFSET_BIT};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::time::Instant;
+
+use crate::constants::{LITERAL_BITS, MEM_SIZE, MIN_MATCH, ML_BITS, OFFSET_BIT, SLOP_BYTES};
+use crate::utils::{const_copy, fixed_copy_within};
 
 const TOKEN_LITERAL: usize = 32;
 const TOKEN_MATCH_LENGTH: usize = 32;
@@ -181,7 +187,6 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
 
                 ml_copy = ml_copy.wrapping_sub(TOKEN_MATCH_LENGTH);
             }
-            //output.copy_within(match_start..match_start + match_length, output_offset);
         }
 
         output_offset += match_length;
@@ -190,50 +195,44 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
     return output_offset;
 }
 
-pub fn const_copy<const SIZE: usize, const SAFE: bool>(
-    src: &[u8], dest: &mut [u8], src_offset: usize, dest_offset: usize
-)
+pub fn decompress(input_file: String, output_file: String)
 {
-    // ensure we don't go out of bounds(only if SAFE is true)
-    if SAFE
+    let p = Path::new(&input_file);
+
+    let p_len = p.metadata().unwrap().len() as usize;
+    // allocate and add slack bytes, so that we don't panic in simd_decode
+    let mut max_in = Vec::with_capacity(MEM_SIZE + SLOP_BYTES);
+    max_in.resize(MEM_SIZE, 0);
+
+    let mut max_out = Vec::with_capacity(MEM_SIZE + SLOP_BYTES);
+    max_out.resize(MEM_SIZE, 0);
+
+    let start = Instant::now();
+    let mut fd = File::open(p).unwrap();
+    let mut out_fd = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&output_file)
+        .unwrap();
+
+    let mut curr_len = 0;
+    let mut file_contents = [0; 4];
+    let mut end_position = 0;
+
+    while curr_len < p_len
     {
-        assert!(
-            src_offset + SIZE - 1 < src.len(),
-            "End position {} our of range for slice of length {}",
-            src_offset + SIZE,
-            src.len()
-        );
-        assert!(
-            dest_offset + SIZE < dest.len(),
-            "End position {} our of range for slice of length {}",
-            dest_offset + SIZE,
-            dest.len()
-        );
+        fd.read_exact(&mut file_contents).unwrap();
+        let size = u32::from_le_bytes(file_contents[0..4].try_into().unwrap()) as usize;
+        fd.read_exact(&mut max_in[0..size]).unwrap();
+        dbg!(size);
+        let f_length = decode_sequences(&max_in, size as usize, &mut max_out);
+        curr_len += size as usize + 4 /*size bytes*/ ;
+        end_position += f_length;
+        out_fd.write_all(&max_out[..f_length]).unwrap();
     }
-    unsafe {
-        dest.as_mut_ptr()
-            .add(dest_offset)
-            .copy_from(src.as_ptr().add(src_offset), SIZE);
-        // do not generate calls to memcpy optimizer
-        // I'm doing some exclusive shit
-        // (If it's a loop, the optimizer may lift this to be a memcpy)
-        #[cfg(not(any(target_arch = "asmjs", target_arch = "wasm32")))]
-        {
-            use std::arch::asm;
-            asm!("");
-        }
-    }
-}
 
-pub fn fixed_copy_within<const SIZE: usize>(dest: &mut [u8], src_offset: usize, dest_offset: usize)
-{
-    // for debug builds ensure we don't go out of bounds
-    debug_assert!(
-        dest_offset + SIZE <= dest.len(),
-        "[dst]: End position {} out of range for slice of length {}",
-        dest_offset + SIZE,
-        dest.len()
-    );
+    let end = Instant::now();
 
-    dest.copy_within(src_offset..src_offset + SIZE, dest_offset);
+    println!("{curr_len}->{end_position} in {:?}", end - start)
 }
