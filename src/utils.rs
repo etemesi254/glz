@@ -69,15 +69,11 @@ pub fn count_sse(window: &[u8], match_window: &[u8]) -> usize
         while iterations > 0
         {
             let window_simd = _mm_loadu_si128(a_ptr.add(offset).cast());
-
             let match_simd = _mm_loadu_si128(b_ptr.add(offset).cast());
-
             let result = _mm_cmpeq_epi8(window_simd, match_simd);
-
             // mask uses lower 16 bits of int32, so let's convert
             // directly.
             let mask = _mm_movemask_epi8(result) as i16;
-
             match_length += mask.trailing_ones() as usize;
 
             if mask != -1
@@ -87,9 +83,7 @@ pub fn count_sse(window: &[u8], match_window: &[u8]) -> usize
                 // the longest match
                 return match_length;
             }
-
             offset += 16;
-
             iterations -= 1;
         }
     }
@@ -116,15 +110,12 @@ pub fn count_fallback(window: &[u8], match_window: &[u8]) -> usize
     let mut match_length = 0;
 
     let window_chunks = window.chunks_exact(SIZE);
-
     let match_chunks = match_window.chunks_exact(SIZE);
 
     for (sm_window, sm_match) in window_chunks.zip(match_chunks)
     {
         let sm_w: usize = usize::from_ne_bytes(sm_window.try_into().unwrap());
-
         let sm_m: usize = usize::from_ne_bytes(sm_match.try_into().unwrap());
-
         let diff = sm_w ^ sm_m; // it's associative.
 
         if diff == 0
@@ -166,9 +157,7 @@ pub fn copy_literals(
         'num_literals: loop
         {
             const_copy::<16, true>(src, dest, src_offset + counter, dest_offset + counter);
-
             counter += 16;
-
             if counter >= num_literals
             {
                 break 'num_literals;
