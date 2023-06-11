@@ -1,5 +1,6 @@
 use std::cmp::min;
 
+use crate::compress::EncodeSequence;
 use crate::constants::{GLZ_MIN_MATCH, HASH_CHAINS_MINIMAL_MATCH};
 use crate::utils::{count, hash_chains_hash};
 
@@ -28,31 +29,45 @@ impl HashChains
     pub fn clear(&mut self)
     {
         self.entries.fill(0);
+
+        self.table.iter_mut().for_each(|x| unsafe {
+            x.set_len(0);
+        });
     }
 
-    pub(crate) fn advance(&mut self, window: &[u8], start: usize, steps: usize)
-    {
-        for i in 1..steps
-        {
-            let hash_entry = hash_chains_hash(window, start + i, 5, self.hash_log);
+    // pub(crate) fn advance(&mut self, window: &[u8], start: usize, steps: usize)
+    // {
+    //     for i in 1..steps
+    //     {
+    //         let hash_entry =
+    //             hash_chains_hash(window, start + i, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
+    //
+    //         self.add_entry((start + i) as u32, hash_entry);
+    //     }
+    // }
+    // /// Add a new entry to a cache table
+    // ///
+    // /// # Arguments
+    // /// -  offset: New number to add to the hash chain
+    // /// -  position: The node in the hash chain
+    // pub fn add_entry(&mut self, offset: u32, position: usize)
+    // {
+    //     self.entries[position] = self.entries[position].saturating_add(1);
+    //     self.table[position].push(offset);
+    // }
 
-            self.add_entry((start + i) as u32, hash_entry);
-        }
-    }
-    /// Add a new entry to a cache table
-    ///
-    /// # Arguments
-    /// -  offset: New number to add to the hash chain
-    /// -  position: The node in the hash chain
-    pub fn add_entry(&mut self, offset: u32, position: usize)
+    pub fn find_longest_match_greedy(
+        &mut self, source: &[u8], window_pos: usize, num_literals: usize,
+        sequence: &mut EncodeSequence
+    ) -> bool
     {
-        self.entries[position] = self.entries[position].saturating_add(1);
-        self.table[position].push(offset);
-    }
-    pub fn insert_and_get_longest_match_greedy(
-        &mut self, source: &[u8], window_pos: usize, num_literals: usize
-    ) -> (usize, usize)
-    {
+        debug_assert!(window_pos >= num_literals);
+        sequence.ll = 0;
+        sequence.ml = 0;
+        sequence.ol = 0;
+        sequence.cost = 0;
+        sequence.start = window_pos - num_literals;
+
         let hash = hash_chains_hash(source, window_pos, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
 
         let previous_entries = &mut self.entries[hash];
@@ -61,22 +76,23 @@ impl HashChains
         {
             *previous_entries = 1;
             self.table[hash].push(window_pos as u32);
-            return (0, 0);
+            return false;
         }
         // We have a previous occurrence
         // Go find your match
-        self.find_match(source, hash, window_pos, num_literals)
+        self.find_match(source, hash, window_pos, num_literals, sequence)
     }
     fn find_match(
-        &mut self, source: &[u8], hash: usize, window_position: usize, num_literals: usize
-    ) -> (usize, usize)
+        &mut self, source: &[u8], hash: usize, window_position: usize, num_literals: usize,
+        seq: &mut EncodeSequence
+    ) -> bool
     {
         let list = self.table.get(hash).unwrap();
         let searches_to_perform = min(list.len(), self.maximum_depth);
 
-        let mut maximum_match_length = GLZ_MIN_MATCH;
-        let mut max_offset = 0_usize;
-        let mut cost = 0;
+        let mut valid_seq = false;
+
+        let previous_match_start = &source[window_position..];
 
         // last elements contains most recent match, so we run from that side
         // to ensure we search the nearest offset first
@@ -84,37 +100,51 @@ impl HashChains
         {
             let offset = *previous_offset as usize;
 
-            if offset == window_position
+            if offset == window_position || offset == 0
             {
                 continue;
             }
-            let previous_match_start = &source[window_position..];
 
             let curr_match = count(previous_match_start, &source[offset..]);
+
+            if curr_match < GLZ_MIN_MATCH
+            {
+                continue;
+            }
             let curr_offset = window_position - offset;
             let new_cost = estimate_header_cost(num_literals, curr_match, curr_offset) as usize;
             // new cost
-            let nc = (curr_match * 8).saturating_sub(new_cost);
+            let nc = curr_match as isize - new_cost as isize;
             // old cost
-            let oc = (maximum_match_length * 8_usize).saturating_sub(cost);
+            let oc = seq.ml as isize - seq.cost as isize;
 
-            if nc >= oc
+            // dbg!(
+            //     num_literals,
+            //     new_cost,
+            //     curr_offset,
+            //     curr_match,
+            //     window_position
+            // );
+            // eprintln!();
+
+            if nc > oc
             {
-                maximum_match_length = curr_match;
-                max_offset = offset;
-                cost = new_cost;
-            }
-            else if nc == oc
-                && nc != 0
-                && curr_match == maximum_match_length
-                && offset > max_offset
-            {
-                max_offset = offset;
+                seq.cost = new_cost;
+                seq.ll = num_literals;
+                seq.ml = curr_match;
+                seq.ol = curr_offset;
+
+                valid_seq = true;
+
+                // good enough match
+                if nc > 100
+                {
+                    break;
+                }
             }
         }
         self.table[hash].push(window_position as u32);
-
-        (maximum_match_length, max_offset)
+        valid_seq
     }
 }
 
@@ -126,18 +156,16 @@ pub fn estimate_header_cost(literals: usize, ml: usize, offset: usize) -> u32
 
     if literals > 7
     {
-        l_cost += 1;
-        l_cost += 2 * u32::from(literals > 0x80);
+        l_cost += 1 + u32::from((usize::BITS - literals.leading_zeros()) / 8);
     }
 
     let token_match = usize::from(GLZ_MIN_MATCH) + 7;
 
     if ml > token_match
     {
-        ml_cost += 1;
-        ml_cost += 2 * u32::from(ml > 0x80);
+        ml_cost += 1 + u32::from((usize::BITS - ml.leading_zeros()) >> 3);
     }
-    off_cost += 2 * u32::from(offset > 0x80);
+    off_cost += u32::from((usize::BITS - offset.leading_zeros()) >> 3);
 
-    l_cost + ml_cost + off_cost
+    1 + l_cost + ml_cost + off_cost
 }

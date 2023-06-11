@@ -20,7 +20,7 @@ pub const fn cache_table_inner_hash(bytes: [u8; 8], shift_by: usize, shift_down_
     // a simple multiplicative fmf_hash.
     let mut h = u64::from_le_bytes(bytes) << shift_by;
     h ^= h >> 33;
-    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
     (h >> (64 - shift_down_by)) as u32
 }
 
@@ -149,14 +149,14 @@ pub fn copy_literals(
     src: &[u8], dest: &mut [u8], src_offset: usize, dest_offset: usize, num_literals: usize
 )
 {
-    const_copy::<16, true>(src, dest, src_offset, dest_offset);
+    const_copy::<16, false>(src, dest, src_offset, dest_offset);
     if num_literals > 16
     {
         let mut counter = 16;
 
         'num_literals: loop
         {
-            const_copy::<16, true>(src, dest, src_offset + counter, dest_offset + counter);
+            const_copy::<16, false>(src, dest, src_offset + counter, dest_offset + counter);
             counter += 16;
             if counter >= num_literals
             {

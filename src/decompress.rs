@@ -10,7 +10,7 @@ const TOKEN_LITERAL: usize = 32;
 const TOKEN_MATCH_LENGTH: usize = 32;
 
 #[inline(always)]
-fn decode_encode_mod(input: &[u8]) -> (usize, usize)
+pub fn decode_encode_mod(input: &[u8]) -> (usize, usize)
 {
     let mut curr_position = 0;
     let mut u_var = 0;
@@ -108,6 +108,10 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         {
             break;
         }
+        if input_offset > output_size
+        {
+            panic!();
+        }
 
         // extract match offset
         let (ol, consumed_offset) = decode_encode_mod(&input[input_offset..]);
@@ -115,6 +119,15 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         offset |= (ol << 2) as usize;
 
         let match_start = output_offset - offset;
+        assert!(
+            output_offset > offset,
+            "{} {} {}, {}",
+            output_offset,
+            offset,
+            input_offset,
+            output_size
+        );
+        //dbg!(literal_length, match_length, match_start, output_offset);
 
         // increment the input to point to match
         input_offset += usize::from(consumed_offset);
@@ -188,6 +201,8 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
                 ml_copy = ml_copy.wrapping_sub(TOKEN_MATCH_LENGTH);
             }
         }
+        // dbg!(literal_length, match_length, offset);
+        // println!();
 
         output_offset += match_length;
     }
@@ -225,11 +240,12 @@ pub fn decompress(input_file: String, output_file: String)
         fd.read_exact(&mut file_contents).unwrap();
         let size = u32::from_le_bytes(file_contents[0..4].try_into().unwrap()) as usize;
         fd.read_exact(&mut max_in[0..size]).unwrap();
-        dbg!(size);
+
         let f_length = decode_sequences(&max_in, size as usize, &mut max_out);
-        curr_len += size as usize + 4 /*size bytes*/ ;
+        curr_len += size as usize + 4 /*size bytes*/;
         end_position += f_length;
         out_fd.write_all(&max_out[..f_length]).unwrap();
+        out_fd.flush().unwrap();
     }
 
     let end = Instant::now();
