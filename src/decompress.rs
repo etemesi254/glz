@@ -120,7 +120,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
 
         let match_start = output_offset - offset;
         assert!(
-            output_offset > offset,
+            output_offset >= offset,
             "{} {} {}, {}",
             output_offset,
             offset,

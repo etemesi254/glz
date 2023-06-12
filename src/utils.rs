@@ -87,9 +87,12 @@ pub fn count_sse(window: &[u8], match_window: &[u8]) -> usize
             iterations -= 1;
         }
     }
+    // PS: There is a bug with the count fallback and this,
+    // investigate
     // sir we never thought we'd get here
     // long matches.
-    match_length + count_fallback(&window[offset..], &match_window[offset..])
+    // Ignore
+    match_length //+ count_fallback(&window[offset..], &match_window[offset..])
 }
 
 pub fn count_fallback(window: &[u8], match_window: &[u8]) -> usize
@@ -130,16 +133,18 @@ pub fn count_fallback(window: &[u8], match_window: &[u8]) -> usize
         }
     }
 
-    // small chunks
-    match_window[match_length..]
-        .iter()
-        .zip(&window[match_length..])
-        .for_each(|(a, b)| {
-            if a == b
-            {
-                match_length += 1;
-            }
-        });
+    // PS: There is a bug with this, investigate
+    //
+    // // small chunks
+    // match_window[match_length..]
+    //     .iter()
+    //     .zip(&window[match_length..])
+    //     .for_each(|(a, b)| {
+    //         if a == b
+    //         {
+    //             match_length += 1;
+    //         }
+    //     });
 
     match_length
 }

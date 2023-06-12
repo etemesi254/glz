@@ -40,6 +40,9 @@ pub fn compress(input_file: String, output_file: String)
     let mut max_out = Vec::with_capacity(MEM_SIZE + SLOP_BYTES);
     max_out.resize(MEM_SIZE, 0);
 
+    // let mut temp = Vec::with_capacity(MEM_SIZE + SLOP_BYTES);
+    // temp.resize(MEM_SIZE, 0);
+
     let start = Instant::now();
     let mut fd = File::open(p).unwrap();
     let mut out_fd = OpenOptions::new()
@@ -55,6 +58,7 @@ pub fn compress(input_file: String, output_file: String)
     {
         let bytes_read = fd.read(&mut max_in[0..BLOCK_SIZE]).unwrap();
         total_bytes_read += bytes_read;
+
         if bytes_read == 0
         {
             break;
@@ -62,15 +66,29 @@ pub fn compress(input_file: String, output_file: String)
 
         let bytes_compressed = compress_block(&max_in[..bytes_read], &mut max_out[4..], &mut table);
 
-        //dbg!(bytes_compressed);
         max_out[0..4].copy_from_slice(&(bytes_compressed as u32).to_le_bytes());
 
-        //panic!();
         table.clear();
         total_bytes += bytes_compressed;
         out_fd.write_all(&max_out[..bytes_compressed + 4]).unwrap();
-        //dbg!(ratio, block_ratio);
-        // panic!();
+        //
+        // unsafe {
+        //     let length = decode_sequences(
+        //         &max_out[4..bytes_compressed + 4],
+        //         bytes_compressed,
+        //         &mut temp[0..]
+        //     );
+        //     //println!("{} {}", length, bytes_read);
+        //     for i in 0..length
+        //     {
+        //         if max_in[i] != temp[i]
+        //         {
+        //             println!("{:?}", SEQ);
+        //             println!("pos:{} {} {}", i, max_in[i], temp[i]);
+        //             //println!("pos:{} {} {}\n" ma)
+        //         }
+        //     }
+        // }
     }
 
     let end = Instant::now();

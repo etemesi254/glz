@@ -35,27 +35,6 @@ impl HashChains
         });
     }
 
-    // pub(crate) fn advance(&mut self, window: &[u8], start: usize, steps: usize)
-    // {
-    //     for i in 1..steps
-    //     {
-    //         let hash_entry =
-    //             hash_chains_hash(window, start + i, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
-    //
-    //         self.add_entry((start + i) as u32, hash_entry);
-    //     }
-    // }
-    // /// Add a new entry to a cache table
-    // ///
-    // /// # Arguments
-    // /// -  offset: New number to add to the hash chain
-    // /// -  position: The node in the hash chain
-    // pub fn add_entry(&mut self, offset: u32, position: usize)
-    // {
-    //     self.entries[position] = self.entries[position].saturating_add(1);
-    //     self.table[position].push(offset);
-    // }
-
     pub fn find_longest_match_greedy(
         &mut self, source: &[u8], window_pos: usize, num_literals: usize,
         sequence: &mut EncodeSequence

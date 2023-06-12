@@ -1,8 +1,7 @@
 use crate::compress::hash_chains::hash_chains::HashChains;
 use crate::compress::EncodeSequence;
 use crate::constants::{
-    GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, SKIP_TRIGGER, TOKEN, UNCOMPRESSED,
-    WINDOW_SIZE
+    GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, SKIP_TRIGGER, TOKEN, WINDOW_SIZE
 };
 use crate::utils::copy_literals;
 
@@ -60,9 +59,11 @@ fn compress_sequence<const IS_END: bool>(
     let start = *dest_position;
     let token_byte = write_token(seq);
     let mut extra = *seq;
+
     extra.ll = extra.ll.wrapping_sub(7);
     extra.ml = extra.ml.wrapping_sub(7 + GLZ_MIN_MATCH);
     extra.ol = extra.ol >> 2;
+
     dest[*dest_position] = token_byte;
     *dest_position += 1;
 
@@ -94,14 +95,9 @@ fn compress_sequence<const IS_END: bool>(
     assert!(token_b <= seq.ml, "{token_b}, {end} {start} {}", seq.ml);
 }
 
-#[rustfmt::skip]
 #[inline(never)]
 #[allow(clippy::too_many_lines, unused_assignments)]
-pub fn compress_block(
-    src: &[u8],
-    dest: &mut [u8],
-    table: &mut HashChains,
-) -> usize
+pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HashChains) -> usize
 {
     let mut window_start = 0;
     let mut literals_before_match = 0;
@@ -110,11 +106,12 @@ pub fn compress_block(
     let mut out_position = 0;
     let mut compressed_bytes = 0;
 
-    'match_loop: loop {
+    'match_loop: loop
+    {
         // main match finder loop
         'inner_loop: loop
         {
-            if window_start + WINDOW_SIZE + GLZ_MIN_MATCH > src.len()
+            if window_start + WINDOW_SIZE > src.len()
             {
                 // close to input end
                 break 'match_loop;
@@ -123,8 +120,9 @@ pub fn compress_block(
                 src,
                 window_start,
                 literals_before_match,
-                &mut sequence,
-            ) {
+                &mut sequence
+            )
+            {
                 break 'inner_loop;
             }
 
@@ -144,14 +142,13 @@ pub fn compress_block(
         window_start += sequence.ml;
         sequence.ml = 0;
 
-        if window_start + WINDOW_SIZE + UNCOMPRESSED > src.len()
+        if window_start + WINDOW_SIZE > src.len()
         {
             // close to input end
             break 'match_loop;
         }
-        //table.advance(src, window_start - sequence.ml, sequence.ml);
     }
-    if window_start != src.len() || literals_before_match !=0 {
+    {
         assert_eq!(sequence.ml, 0);
         sequence.ll = (src.len() - window_start) + literals_before_match;
         sequence.ol = 0;
