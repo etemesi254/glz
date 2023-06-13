@@ -71,28 +71,14 @@ pub fn compress(input_file: String, output_file: String)
         table.clear();
         total_bytes += bytes_compressed;
         out_fd.write_all(&max_out[..bytes_compressed + 4]).unwrap();
-        //
-        // unsafe {
-        //     let length = decode_sequences(
-        //         &max_out[4..bytes_compressed + 4],
-        //         bytes_compressed,
-        //         &mut temp[0..]
-        //     );
-        //     //println!("{} {}", length, bytes_read);
-        //     for i in 0..length
-        //     {
-        //         if max_in[i] != temp[i]
-        //         {
-        //             println!("{:?}", SEQ);
-        //             println!("pos:{} {} {}", i, max_in[i], temp[i]);
-        //             //println!("pos:{} {} {}\n" ma)
-        //         }
-        //     }
-        // }
     }
 
     let end = Instant::now();
 
-    println!("time: {:?}", end - start);
-    println!("Compressed {} to {}", total_bytes_read, total_bytes);
+    println!(
+        "Compressed {} to {} in {:?}",
+        total_bytes_read,
+        total_bytes,
+        end - start
+    );
 }

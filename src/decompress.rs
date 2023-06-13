@@ -33,7 +33,9 @@ pub fn decode_encode_mod(input: &[u8]) -> (usize, usize)
     return (value, curr_position);
 }
 
-pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> usize
+pub fn decode_sequences(
+    input: &[u8], output_size: usize, output: &mut [u8]
+) -> Result<usize, &'static str>
 {
     let mut input_offset = 0;
     let mut output_offset = 0;
@@ -110,7 +112,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         }
         if input_offset > output_size
         {
-            panic!();
+            return Err("Corrupt file");
         }
 
         // extract match offset
@@ -119,14 +121,12 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         offset |= (ol << 2) as usize;
 
         let match_start = output_offset - offset;
-        assert!(
-            output_offset >= offset,
-            "{} {} {}, {}",
-            output_offset,
-            offset,
-            input_offset,
-            output_size
-        );
+
+        if offset > output_offset
+        {
+            return Err("Corrupt file");
+        }
+
         //dbg!(literal_length, match_length, match_start, output_offset);
 
         // increment the input to point to match
@@ -207,7 +207,7 @@ pub fn decode_sequences(input: &[u8], output_size: usize, output: &mut [u8]) -> 
         output_offset += match_length;
     }
 
-    return output_offset;
+    return Ok(output_offset);
 }
 
 pub fn decompress(input_file: String, output_file: String)
@@ -241,11 +241,21 @@ pub fn decompress(input_file: String, output_file: String)
         let size = u32::from_le_bytes(file_contents[0..4].try_into().unwrap()) as usize;
         fd.read_exact(&mut max_in[0..size]).unwrap();
 
-        let f_length = decode_sequences(&max_in, size as usize, &mut max_out);
-        curr_len += size as usize + 4 /*size bytes*/;
-        end_position += f_length;
-        out_fd.write_all(&max_out[..f_length]).unwrap();
-        out_fd.flush().unwrap();
+        match decode_sequences(&max_in, size as usize, &mut max_out)
+        {
+            Ok(f_length) =>
+            {
+                curr_len += size as usize + 4 /*size bytes*/;
+                end_position += f_length;
+                out_fd.write_all(&max_out[..f_length]).unwrap();
+                out_fd.flush().unwrap();
+            }
+            Err(str) =>
+            {
+                println!("{}", str);
+                return;
+            }
+        }
     }
 
     let end = Instant::now();

@@ -8,11 +8,11 @@ pub struct HashChains
 {
     hash_log:      usize,
     maximum_depth: usize,
-    entries:       Vec<u16>,
+    pub entries:   Vec<u16>,
     // I'm sorry to the cache gods...
     // The newest elements are found in the end of the vec, older
     // entries in the start
-    table:         Vec<Vec<u32>>
+    pub table:     Vec<Vec<u32>>
 }
 
 impl HashChains
@@ -69,6 +69,10 @@ impl HashChains
         let list = self.table.get(hash).unwrap();
         let searches_to_perform = min(list.len(), self.maximum_depth);
 
+        let mut l_cost = 1;
+        l_cost += usize::from(num_literals > 7)
+            + ((usize::BITS - num_literals.leading_zeros()) / 8) as usize;
+
         let mut valid_seq = false;
 
         let previous_match_start = &source[window_position..];
@@ -91,7 +95,7 @@ impl HashChains
                 continue;
             }
             let curr_offset = window_position - offset;
-            let new_cost = estimate_header_cost(num_literals, curr_match, curr_offset) as usize;
+            let new_cost = l_cost + estimate_header_cost(curr_match, curr_offset) as usize;
             // new cost
             let nc = curr_match as isize - new_cost as isize;
             // old cost
@@ -115,11 +119,11 @@ impl HashChains
 
                 valid_seq = true;
 
-                // good enough match
-                if nc > 100
-                {
-                    break;
-                }
+                // // good enough match
+                // if nc > 100
+                // {
+                //     break;
+                // }
             }
         }
         self.table[hash].push(window_position as u32);
@@ -127,24 +131,15 @@ impl HashChains
     }
 }
 
-pub fn estimate_header_cost(literals: usize, ml: usize, offset: usize) -> u32
+pub fn estimate_header_cost(ml: usize, offset: usize) -> u32
 {
-    let mut l_cost = 0;
     let mut off_cost = 1;
     let mut ml_cost = 0;
 
-    if literals > 7
-    {
-        l_cost += 1 + u32::from((usize::BITS - literals.leading_zeros()) / 8);
-    }
-
     let token_match = usize::from(GLZ_MIN_MATCH) + 7;
 
-    if ml > token_match
-    {
-        ml_cost += 1 + u32::from((usize::BITS - ml.leading_zeros()) >> 3);
-    }
+    ml_cost += u32::from(ml > token_match) + u32::from((usize::BITS - ml.leading_zeros()) >> 3);
     off_cost += u32::from((usize::BITS - offset.leading_zeros()) >> 3);
 
-    1 + l_cost + ml_cost + off_cost
+    ml_cost + off_cost
 }
