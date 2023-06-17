@@ -1,3 +1,6 @@
+use crate::compress::EncodeSequence;
+use crate::constants::{GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, TOKEN};
+
 #[inline(always)]
 pub fn hash_chains_hash(
     bytes: &[u8], window_pos: usize, hash_length: usize, hash_log: usize
@@ -226,4 +229,93 @@ pub fn fixed_copy_within<const SIZE: usize>(dest: &mut [u8], src_offset: usize, 
     );
 
     dest.copy_within(src_offset..src_offset + SIZE, dest_offset);
+}
+
+#[inline(always)]
+pub fn write_token(seq: &EncodeSequence) -> u8
+{
+    debug_assert!(seq.ml >= GLZ_MIN_MATCH);
+    let ml_length = seq.ml - GLZ_MIN_MATCH;
+
+    let ml_token = if ml_length >= 7 { 7 } else { ml_length as u8 };
+    let ll_token = if seq.ll >= 7 { 7 } else { seq.ll as u8 };
+    let ol_token = (seq.ol & 0b11) as u8;
+
+    let mut out: u8 = 0;
+
+    out |= ol_token << OFFSET_BIT;
+    out |= ml_token << ML_BITS;
+    out |= ll_token << LITERAL_BITS;
+
+    out
+}
+
+fn compress_encode_mod(mut value: usize, dest: &mut [u8], dest_position: &mut usize)
+{
+    let mut left: i32;
+
+    if value > 0x7f
+    {
+        loop
+        {
+            dest[*dest_position] = ((value & 255) | 0x80) as u8;
+            *dest_position += 1;
+            // debugging purposes
+            // left = (<usize as TryInto<i32>>::try_into(value).unwrap()) - 0x80;
+            // value = (<i32 as TryInto<usize>>::try_into(left).unwrap()) >> 7;
+            left = (value as i32) - 0x80;
+            value = left as usize >> 7;
+
+            if value <= 0x7f
+            {
+                break;
+            }
+        }
+    }
+    dest[*dest_position] = value as u8;
+    *dest_position += 1;
+}
+
+#[inline(always)]
+pub fn compress_sequence<const IS_END: bool>(
+    src: &[u8], dest: &mut [u8], dest_position: &mut usize, seq: &EncodeSequence
+)
+{
+    let start = *dest_position;
+    let token_byte = write_token(seq);
+    let mut extra = *seq;
+
+    extra.ll = extra.ll.wrapping_sub(7);
+    extra.ml = extra.ml.wrapping_sub(7 + GLZ_MIN_MATCH);
+    extra.ol = extra.ol >> 2;
+
+    dest[*dest_position] = token_byte;
+    *dest_position += 1;
+
+    if seq.ll >= TOKEN
+    {
+        compress_encode_mod(extra.ll, dest, dest_position);
+    }
+
+    // copy literals
+    copy_literals(src, dest, seq.start, *dest_position, seq.ll);
+    *dest_position += seq.ll;
+
+    if IS_END
+    {
+        return;
+    }
+
+    // encode offset
+    compress_encode_mod(extra.ol, dest, dest_position);
+
+    if seq.ml >= TOKEN + GLZ_MIN_MATCH
+    {
+        // encode long ml
+        compress_encode_mod(extra.ml, dest, dest_position);
+    }
+    let end = *dest_position;
+    let token_b = end - start - seq.ll;
+    assert_ne!(seq.start + seq.ll, seq.ol);
+    assert!(token_b <= seq.ml, "{token_b}, {end} {start} {}", seq.ml);
 }

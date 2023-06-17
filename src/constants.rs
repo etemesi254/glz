@@ -1,7 +1,7 @@
 /// Minimum match allowed by GLZ format
 pub const GLZ_MIN_MATCH: usize = 3;
 /// Hash finder window size
-pub const WINDOW_SIZE: usize = 8;
+pub const WINDOW_SIZE: usize = 10;
 /// Position of offset in token
 pub const OFFSET_BIT: u8 = 6;
 /// Position of literal in token

@@ -3,8 +3,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::compress::hash_chains::compress_block;
-use crate::compress::hash_chains::hash_chains::HashChains;
+use crate::compress::hash_chains::{compress_block, HashChains};
 use crate::constants::{
     COMPRESSION_LEVEL, DEPTH_STRIDE, HASH_CHAINS_BUCKET_LOG, MEM_SIZE, SLOP_BYTES
 };
@@ -14,11 +13,11 @@ mod hash_chains;
 #[derive(Copy, Clone, Default, Debug)]
 pub struct EncodeSequence
 {
-    start: usize,
-    ll:    usize,
-    ml:    usize,
-    ol:    usize,
-    cost:  usize
+    pub start: usize,
+    pub ll:    usize,
+    pub ml:    usize,
+    pub ol:    usize,
+    pub cost:  usize
 }
 
 pub fn compress(input_file: String, output_file: String)

@@ -1,99 +1,8 @@
-use crate::compress::hash_chains::hash_chains::HashChains;
+use std::cmp::min;
+
 use crate::compress::EncodeSequence;
-use crate::constants::{
-    GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, SKIP_TRIGGER, TOKEN, WINDOW_SIZE
-};
-use crate::utils::copy_literals;
-
-pub mod hash_chains;
-
-#[inline(always)]
-fn write_token(seq: &EncodeSequence) -> u8
-{
-    debug_assert!(seq.ml >= GLZ_MIN_MATCH);
-    let ml_length = seq.ml - GLZ_MIN_MATCH;
-
-    let ml_token = if ml_length >= 7 { 7 } else { ml_length as u8 };
-    let ll_token = if seq.ll >= 7 { 7 } else { seq.ll as u8 };
-    let ol_token = (seq.ol & 0b11) as u8;
-
-    let mut out: u8 = 0;
-
-    out |= ol_token << OFFSET_BIT;
-    out |= ml_token << ML_BITS;
-    out |= ll_token << LITERAL_BITS;
-
-    out
-}
-
-fn compress_encode_mod(mut value: usize, dest: &mut [u8], dest_position: &mut usize)
-{
-    let mut left: i32;
-
-    if value > 0x7f
-    {
-        loop
-        {
-            dest[*dest_position] = ((value & 255) | 0x80) as u8;
-            *dest_position += 1;
-            // debugging purposes
-            // left = (<usize as TryInto<i32>>::try_into(value).unwrap()) - 0x80;
-            // value = (<i32 as TryInto<usize>>::try_into(left).unwrap()) >> 7;
-            left = (value as i32) - 0x80;
-            value = left as usize >> 7;
-
-            if value <= 0x7f
-            {
-                break;
-            }
-        }
-    }
-    dest[*dest_position] = value as u8;
-    *dest_position += 1;
-}
-
-fn compress_sequence<const IS_END: bool>(
-    src: &[u8], dest: &mut [u8], dest_position: &mut usize, seq: &EncodeSequence
-)
-{
-    let start = *dest_position;
-    let token_byte = write_token(seq);
-    let mut extra = *seq;
-
-    extra.ll = extra.ll.wrapping_sub(7);
-    extra.ml = extra.ml.wrapping_sub(7 + GLZ_MIN_MATCH);
-    extra.ol = extra.ol >> 2;
-
-    dest[*dest_position] = token_byte;
-    *dest_position += 1;
-
-    if seq.ll >= TOKEN
-    {
-        compress_encode_mod(extra.ll, dest, dest_position);
-    }
-
-    // copy literals
-    copy_literals(src, dest, seq.start, *dest_position, seq.ll);
-    *dest_position += seq.ll;
-
-    if IS_END
-    {
-        return;
-    }
-
-    // encode offset
-    compress_encode_mod(extra.ol, dest, dest_position);
-
-    if seq.ml >= TOKEN + GLZ_MIN_MATCH
-    {
-        // encode long ml
-        compress_encode_mod(extra.ml, dest, dest_position);
-    }
-    let end = *dest_position;
-    let token_b = end - start - seq.ll;
-    assert_ne!(seq.start + seq.ll, seq.ol);
-    assert!(token_b <= seq.ml, "{token_b}, {end} {start} {}", seq.ml);
-}
+use crate::constants::{GLZ_MIN_MATCH, HASH_CHAINS_MINIMAL_MATCH, SKIP_TRIGGER, WINDOW_SIZE};
+use crate::utils::{compress_sequence, count, hash_chains_hash};
 
 #[inline(never)]
 #[allow(clippy::too_many_lines, unused_assignments)]
@@ -116,6 +25,9 @@ pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HashChains) -> us
                 // close to input end
                 break 'match_loop;
             }
+
+            table.prefetch(&src[window_start + 1..]);
+
             if table.find_longest_match_greedy(
                 src,
                 window_start,
@@ -163,6 +75,163 @@ pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HashChains) -> us
     assert_eq!(compressed_bytes, src.len());
 
     return out_position;
+}
+
+pub struct HashChains
+{
+    hash_log:      usize,
+    maximum_depth: usize,
+    pub entries:   Vec<u16>,
+    // I'm sorry to the cache gods...
+    // The newest elements are found in the end of the vec, older
+    // entries in the start
+    pub table:     Vec<Vec<u32>>
+}
+
+impl HashChains
+{
+    pub fn new(rows: usize, hash_log: usize, maximum_depth: usize) -> Self
+    {
+        HashChains {
+            hash_log,
+            entries: vec![0; rows],
+            maximum_depth,
+            table: vec![Vec::with_capacity(maximum_depth / 2); rows]
+        }
+    }
+    pub fn clear(&mut self)
+    {
+        self.entries.fill(0);
+
+        self.table.iter_mut().for_each(|x| unsafe {
+            x.set_len(0);
+        });
+    }
+    #[inline(always)]
+    pub(crate) fn prefetch(&self, src: &[u8])
+    {
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse"
+        ))]
+        {
+            unsafe {
+                let hash = hash_chains_hash(src, 0, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
+                // SAFETY: We are assured that we are running in a processor capable of executing
+                // this instruction
+                use core::arch::x86_64::_mm_prefetch;
+                _mm_prefetch::<3>(self.table.as_ptr().add(hash).cast::<i8>());
+            }
+        }
+    }
+
+    pub fn find_longest_match_greedy(
+        &mut self, source: &[u8], window_pos: usize, num_literals: usize,
+        sequence: &mut EncodeSequence
+    ) -> bool
+    {
+        debug_assert!(window_pos >= num_literals);
+        sequence.ll = 0;
+        sequence.ml = 0;
+        sequence.ol = 0;
+        sequence.cost = 0;
+        sequence.start = window_pos - num_literals;
+
+        let hash = hash_chains_hash(source, window_pos, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
+
+        let previous_entries = &mut self.entries[hash];
+
+        if *previous_entries == 0
+        {
+            *previous_entries = 1;
+            self.table[hash].push(window_pos as u32);
+            return false;
+        }
+        // We have a previous occurrence
+        // Go find your match
+        self.find_match(source, hash, window_pos, num_literals, sequence)
+    }
+    fn find_match(
+        &mut self, source: &[u8], hash: usize, window_position: usize, num_literals: usize,
+        seq: &mut EncodeSequence
+    ) -> bool
+    {
+        let list = self.table.get(hash).unwrap();
+        let searches_to_perform = min(list.len(), self.maximum_depth);
+
+        let mut l_cost = 1;
+        l_cost += usize::from(num_literals > 7)
+            + ((usize::BITS - num_literals.leading_zeros()) / 8) as usize;
+
+        let mut valid_seq = false;
+
+        let previous_match_start = &source[window_position..];
+
+        // last elements contains most recent match, so we run from that side
+        // to ensure we search the nearest offset first
+        for previous_offset in list.iter().rev().take(searches_to_perform)
+        {
+            let offset = *previous_offset as usize;
+
+            if offset == window_position || offset == 0
+            {
+                continue;
+            }
+
+            let curr_match = count(previous_match_start, &source[offset..]);
+
+            if curr_match < GLZ_MIN_MATCH
+            {
+                continue;
+            }
+            let curr_offset = window_position - offset;
+            let new_cost = l_cost + estimate_header_cost(curr_match, curr_offset) as usize;
+            // new cost
+            let nc = curr_match as isize - new_cost as isize;
+            // old cost
+            let oc = seq.ml as isize - seq.cost as isize;
+
+            // dbg!(
+            //     num_literals,
+            //     new_cost,
+            //     curr_offset,
+            //     curr_match,
+            //     window_position
+            // );
+            // eprintln!();
+
+            if nc > oc
+            {
+                seq.cost = new_cost;
+                seq.ll = num_literals;
+                seq.ml = curr_match;
+                seq.ol = curr_offset;
+
+                valid_seq = true;
+
+                // // good enough match
+                // if nc > 100
+                // {
+                //     break;
+                // }
+            }
+        }
+        self.table[hash].push(window_position as u32);
+        valid_seq
+    }
+}
+
+pub fn estimate_header_cost(ml: usize, offset: usize) -> u32
+{
+    let mut off_cost = 1;
+    let mut ml_cost = 0;
+
+    let token_match = usize::from(GLZ_MIN_MATCH) + 7;
+
+    ml_cost += u32::from(ml > token_match) + u32::from((usize::BITS - ml.leading_zeros()) >> 3);
+    off_cost += u32::from((usize::BITS - offset.leading_zeros()) >> 3);
+
+    ml_cost + off_cost
 }
 
 #[test]
