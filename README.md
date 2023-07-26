@@ -1,4 +1,42 @@
 ## Format
  
-- 4 bytes, file length (BE or LE)
-- 
+- 4 bytes, block length , Little Endian, According to the original glz (provided by GDCC , should be smaller than 16 MB)
+- Token
+  - 2 bits, lower two bits of offset
+  - 3 bits, literal token, if equals to 7(0b111), we will read more bytes to form the full literal
+  - 3 bits, match token,  if equal to 7 (0b111), we will read more bytes to form the full match length
+ 
+- If literal token is 7, we read more bytes, to form the full literal,  the sscheme is encode_mod.
+- After forming the literal token, we have the raw uncompressed literals of `n` bytes, (where `n` is the literal length)
+
+- Offsets: use `encode_mod`, to form the full offset, remember to add token
+- Match length, ises `encode_mod` ,to form full match length, add minimum match length allowed (3)
+
+
+# Encode_mod
+
+```Rust
+#[inline(always)]
+pub fn decode_encode_mod(input: &[u8]) -> (usize, usize)
+{
+    let mut curr_position = 0;
+    let mut u_var = 0;
+    let mut c_var;
+    let mut value: usize = 0;
+    loop
+    {
+        // SAFETY:  None :)
+        let a = *unsafe { input[curr_position] };
+        c_var = usize::from(a) << (u_var & 0x1f);
+        value = value + c_var;
+        curr_position += 1;
+
+        if a <= 0x7f
+        {
+            break;
+        }
+        u_var += 7;
+    }
+    return (value, curr_position);
+}
+```
