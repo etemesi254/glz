@@ -3,10 +3,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::compress::hash_chains::{compress_block, HashChains};
-use crate::constants::{
-    COMPRESSION_LEVEL, DEPTH_STRIDE, HASH_CHAINS_BUCKET_LOG, MEM_SIZE, SLOP_BYTES
-};
+use crate::compress::hash_chains::{compress_block, HcMatchFinder};
+use crate::constants::{BLOCK_SIZE, DEPTH_STRIDE, GLZ_MIN_MATCH, MEM_SIZE, SLOP_BYTES};
 
 mod hash_chains;
 
@@ -22,13 +20,7 @@ pub struct EncodeSequence
 
 pub fn compress(input_file: String, output_file: String)
 {
-    const BLOCK_SIZE: usize = 256 * (1 << 10); //1 * (1 << 20);
-
-    let mut table = HashChains::new(
-        1 << HASH_CHAINS_BUCKET_LOG,
-        HASH_CHAINS_BUCKET_LOG,
-        COMPRESSION_LEVEL * DEPTH_STRIDE
-    );
+    let mut table = HcMatchFinder::new(BLOCK_SIZE, DEPTH_STRIDE as i32, GLZ_MIN_MATCH, 100);
 
     let p = Path::new(&input_file);
 
@@ -67,7 +59,7 @@ pub fn compress(input_file: String, output_file: String)
 
         max_out[0..4].copy_from_slice(&(bytes_compressed as u32).to_le_bytes());
 
-        table.clear();
+        table.reset();
         total_bytes += bytes_compressed;
         out_fd.write_all(&max_out[..bytes_compressed + 4]).unwrap();
     }

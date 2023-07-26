@@ -1,32 +1,6 @@
 use crate::compress::EncodeSequence;
 use crate::constants::{GLZ_MIN_MATCH, LITERAL_BITS, ML_BITS, OFFSET_BIT, TOKEN};
 
-#[inline(always)]
-pub fn hash_chains_hash(
-    bytes: &[u8], window_pos: usize, hash_length: usize, hash_log: usize
-) -> usize
-{
-    // how many bytes to discard.
-    let shift = (8 - hash_length) * 8;
-
-    let bx = bytes
-        .get(window_pos..window_pos + 8)
-        .unwrap()
-        .try_into()
-        .unwrap();
-    cache_table_inner_hash(bx, shift, hash_log) as usize
-}
-
-pub const fn cache_table_inner_hash(bytes: [u8; 8], shift_by: usize, shift_down_by: usize) -> u32
-{
-    // A stronger fmf_hash that has lesser fmf_hash collisions than
-    // a simple multiplicative fmf_hash.
-    let mut h = u64::from_le_bytes(bytes) << shift_by;
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
-    (h >> (64 - shift_down_by)) as u32
-}
-
 #[allow(unreachable_code)]
 pub fn count(window: &[u8], match_window: &[u8]) -> usize
 {
@@ -281,7 +255,6 @@ pub fn compress_sequence<const IS_END: bool>(
     src: &[u8], dest: &mut [u8], dest_position: &mut usize, seq: &EncodeSequence
 )
 {
-    let start = *dest_position;
     let token_byte = write_token(seq);
     let mut extra = *seq;
 
@@ -314,8 +287,58 @@ pub fn compress_sequence<const IS_END: bool>(
         // encode long ml
         compress_encode_mod(extra.ml, dest, dest_position);
     }
-    let end = *dest_position;
-    let token_b = end - start - seq.ll;
+    //let end = *dest_position;
+    //let token_b = end - start - seq.ll;
     assert_ne!(seq.start + seq.ll, seq.ol);
-    assert!(token_b <= seq.ml, "{token_b}, {end} {start} {}", seq.ml);
+    //assert!(token_b <= seq.ml, "{token_b}, {end} {start} {}", seq.ml);
+}
+
+pub(crate) fn prefetch<T: Copy>(ptr: *const T, hash: usize)
+{
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse"
+    ))]
+    {
+        unsafe {
+            // SAFETY: We are assured that we are running in a processor capable of executing
+            // this instruction
+            use core::arch::x86_64::_mm_prefetch;
+            _mm_prefetch::<3>(ptr.add(hash).cast::<i8>());
+        }
+    }
+}
+#[inline(always)]
+pub unsafe fn v_hash<const MIN_LENGTH: u8>(h_ptr: *const u8, num_bits: usize) -> usize
+{
+    debug_assert!(num_bits <= 32);
+    debug_assert!(MIN_LENGTH < 8);
+
+    match MIN_LENGTH
+    {
+        4 =>
+        {
+            const PRIME_BYTES: u32 = 2654435761;
+            ((h_ptr.cast::<u32>().read_unaligned()).wrapping_mul(PRIME_BYTES) >> (32 - num_bits))
+                as usize
+        }
+        5 =>
+        {
+            const PRIME_BYTES: u64 = 889523592379;
+            (((h_ptr.cast::<u64>().read_unaligned()) << (64 - 40)).wrapping_mul(PRIME_BYTES)
+                >> (64 - num_bits)) as usize
+        }
+        6 =>
+        {
+            const PRIME_BYTES: u64 = 227718039650203;
+            (((h_ptr.cast::<u64>().read_unaligned()) << (64 - 48)).wrapping_mul(PRIME_BYTES)
+                >> (64 - num_bits)) as usize
+        }
+
+        _ =>
+        {
+            debug_assert!(false, "Unknown min length {}", MIN_LENGTH);
+            0
+        }
+    }
 }

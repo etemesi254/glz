@@ -1,60 +1,56 @@
-use std::cmp::min;
-
 use crate::compress::EncodeSequence;
-use crate::constants::{GLZ_MIN_MATCH, HASH_CHAINS_MINIMAL_MATCH, SKIP_TRIGGER, WINDOW_SIZE};
-use crate::utils::{compress_sequence, count, hash_chains_hash};
+use crate::constants::{BLOCK_SIZE, GLZ_MIN_MATCH, WINDOW_SIZE};
+use crate::utils::{compress_sequence, count, prefetch, v_hash};
+
+const HASH_FOUR_LOG_SIZE: usize = 17;
+const HASH_THREE_LOG_SIZE: usize = 15;
+const FIRST_BYTE_OFFSET: u32 = 24;
+
+const HASH_FOUR_SIZE: usize = 1 << HASH_FOUR_LOG_SIZE;
 
 #[inline(never)]
 #[allow(clippy::too_many_lines, unused_assignments)]
-pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HashChains) -> usize
+pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HcMatchFinder) -> usize
 {
     let mut window_start = 0;
     let mut literals_before_match = 0;
-    let mut sequence = EncodeSequence::default();
-    let mut skip_bytes = 0;
+    let skip_literals = 1;
     let mut out_position = 0;
     let mut compressed_bytes = 0;
+
+    let mut sequence = EncodeSequence::default();
 
     'match_loop: loop
     {
         // main match finder loop
         'inner_loop: loop
         {
-            if window_start + WINDOW_SIZE > src.len()
+            if window_start + skip_literals + WINDOW_SIZE > src.len()
             {
                 // close to input end
                 break 'match_loop;
             }
 
-            table.prefetch(&src[window_start + 1..]);
-
-            if table.find_longest_match_greedy(
-                src,
-                window_start,
-                literals_before_match,
-                &mut sequence
-            )
+            if table.longest_four_match(src, window_start, literals_before_match, &mut sequence)
             {
+                sequence.ll = literals_before_match;
                 break 'inner_loop;
             }
 
-            let skip_literals = 1 + (skip_bytes >> SKIP_TRIGGER);
-            skip_bytes += 1;
-            literals_before_match += skip_literals;
             window_start += skip_literals;
+            literals_before_match += skip_literals;
         }
-
         compressed_bytes += sequence.ll + sequence.ml;
-
         compress_sequence::<false>(src, dest, &mut out_position, &sequence);
 
+        table.advance_four_match(src, window_start, sequence.ml);
         literals_before_match = 0;
-        skip_bytes = 0;
 
-        window_start += sequence.ml;
+        window_start += sequence.ml as usize;
+
         sequence.ml = 0;
 
-        if window_start + WINDOW_SIZE > src.len()
+        if window_start + WINDOW_SIZE + skip_literals > src.len()
         {
             // close to input end
             break 'match_loop;
@@ -62,176 +58,214 @@ pub fn compress_block(src: &[u8], dest: &mut [u8], table: &mut HashChains) -> us
     }
     {
         assert_eq!(sequence.ml, 0);
-        sequence.ll = (src.len() - window_start) + literals_before_match;
-        sequence.ol = 0;
-        sequence.start = src.len() - sequence.ll;
-        // so write_token works
+
+        sequence.ll = src
+            .len()
+            .wrapping_sub(window_start)
+            .wrapping_add(literals_before_match);
+
+        sequence.ol = 10;
+        sequence.start = src.len() - (sequence.ll as usize);
         sequence.ml = GLZ_MIN_MATCH;
-
-        compressed_bytes += sequence.ll;
-
         compress_sequence::<true>(src, dest, &mut out_position, &sequence);
+
+        compressed_bytes += sequence.ll as usize;
     }
+    table.reset();
     assert_eq!(compressed_bytes, src.len());
 
     return out_position;
 }
 
-pub struct HashChains
+pub struct HcMatchFinder
 {
-    hash_log:      usize,
-    maximum_depth: usize,
-    pub entries:   Vec<u16>,
-    // I'm sorry to the cache gods...
-    // The newest elements are found in the end of the vec, older
-    // entries in the start
-    pub table:     Vec<Vec<u32>>
+    next_hash:    [usize; 2],
+    hc_tab:       [u32; 1 << HASH_FOUR_LOG_SIZE],
+    hb_tab:       [u32; 1 << HASH_THREE_LOG_SIZE],
+    next_tab:     Box<[u32; BLOCK_SIZE]>,
+    search_depth: i32,
+    min_length:   usize,
+    nice_length:  usize
 }
 
-impl HashChains
+impl HcMatchFinder
 {
-    pub fn new(rows: usize, hash_log: usize, maximum_depth: usize) -> Self
+    /// create a new match finder
+    pub fn new(
+        buf_size: usize, search_depth: i32, min_length: usize, nice_length: usize
+    ) -> HcMatchFinder
     {
-        HashChains {
-            hash_log,
-            entries: vec![0; rows],
-            maximum_depth,
-            table: vec![Vec::with_capacity(maximum_depth / 2); rows]
+        let n_tab = vec![0; buf_size].into_boxed_slice();
+        //debug_assert!(min_length == 4);
+        HcMatchFinder {
+            next_hash: [0, 0],
+            hc_tab: [0; 1 << HASH_FOUR_LOG_SIZE],
+            hb_tab: [0; 1 << HASH_THREE_LOG_SIZE],
+            next_tab: n_tab.try_into().expect("Uh oh, fix values bro :)"),
+            search_depth,
+            nice_length,
+            min_length
         }
     }
-    pub fn clear(&mut self)
-    {
-        self.entries.fill(0);
 
-        self.table.iter_mut().for_each(|x| unsafe {
-            x.set_len(0);
-        });
+    pub fn reset(&mut self)
+    {
+        self.hc_tab.fill(0);
+        self.hb_tab.fill(0);
+        self.next_hash.fill(0);
     }
     #[inline(always)]
-    pub(crate) fn prefetch(&self, src: &[u8])
-    {
-        #[cfg(all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            target_feature = "sse"
-        ))]
-        {
-            unsafe {
-                let hash = hash_chains_hash(src, 0, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
-                // SAFETY: We are assured that we are running in a processor capable of executing
-                // this instruction
-                use core::arch::x86_64::_mm_prefetch;
-                _mm_prefetch::<3>(self.table.as_ptr().add(hash).cast::<i8>());
-            }
-        }
-    }
-
-    pub fn find_longest_match_greedy(
-        &mut self, source: &[u8], window_pos: usize, num_literals: usize,
-        sequence: &mut EncodeSequence
+    pub fn longest_four_match(
+        &mut self, bytes: &[u8], start: usize, literal_length: usize, sequence: &mut EncodeSequence
     ) -> bool
     {
-        debug_assert!(window_pos >= num_literals);
-        sequence.ll = 0;
-        sequence.ml = 0;
-        sequence.ol = 0;
-        sequence.cost = 0;
-        sequence.start = window_pos - num_literals;
+        let curr_start = &bytes[start..];
+        // store the current first byte in the hash, we use this to
+        // determine if a match is either a true mach or a hash collision
+        // in the bottom
+        let curr_match_byte = usize::from(curr_start[0]);
+        let curr_byte = u32::from(curr_start[0]) << FIRST_BYTE_OFFSET;
 
-        let hash = hash_chains_hash(source, window_pos, HASH_CHAINS_MINIMAL_MATCH, self.hash_log);
+        let next_window = unsafe { bytes.as_ptr().add(start + 1) };
+        /* Get the precomputed hash codes */
+        let hash = self.next_hash[1];
+        /* From the hash buckets, get the first node of each linked list. */
+        let mut cur_offset = self.hc_tab[hash % HASH_FOUR_SIZE] as usize;
 
-        let previous_entries = &mut self.entries[hash];
+        self.hc_tab[hash % HASH_FOUR_SIZE] = curr_byte | (start as u32);
+        self.next_tab[start % BLOCK_SIZE] = cur_offset as u32;
 
-        if *previous_entries == 0
+        //  compute the next hash codes
+        let n_hash4 = unsafe { v_hash::<4>(next_window, HASH_FOUR_LOG_SIZE) };
+        prefetch(self.hc_tab.as_ptr(), n_hash4);
+        prefetch(bytes.as_ptr(), cur_offset);
+
+        self.next_hash[1] = n_hash4 as usize;
+        let mut match_found = false;
+
+        if cur_offset != 0
         {
-            *previous_entries = 1;
-            self.table[hash].push(window_pos as u32);
-            return false;
+            // top byte is usually first match offset, so remove it
+            let mut first_match_byte = cur_offset >> FIRST_BYTE_OFFSET;
+
+            cur_offset &= (1 << FIRST_BYTE_OFFSET) - 1;
+
+            let mut depth = self.search_depth;
+
+            'outer: loop
+            {
+                if cur_offset == 0 || depth <= 0
+                {
+                    return match_found;
+                }
+                'inner: loop
+                {
+                    depth -= 1;
+
+                    // compare first byte usually stored in hc_tab and next tab for
+                    // the offset
+                    if first_match_byte == curr_match_byte
+                    {
+                        // found a possible match, break to see how
+                        // long it is
+                        // this calls into extend
+                        break 'inner;
+                    }
+
+                    cur_offset = self.next_tab[cur_offset % BLOCK_SIZE] as usize;
+                    first_match_byte = cur_offset >> FIRST_BYTE_OFFSET;
+                    cur_offset &= (1 << FIRST_BYTE_OFFSET) - 1;
+
+                    if depth <= 0 || cur_offset == 0
+                    {
+                        // no match found
+                        // go and try the other tab
+                        break 'outer;
+                    }
+                }
+                if match_found
+                {
+                    unsafe {
+                        // we have a previous match, check if current match length will go past
+                        // the previous match length by looking at the byte in current length plus 1
+                        // if they match, then this has the potential to beat the previous ML
+                        let prev_match_end = bytes.get_unchecked(cur_offset + sequence.ml);
+                        // N.B: This may read +1 byte past curr_start, but that is okay
+                        let curr_match_end = curr_start.get_unchecked(sequence.ml);
+
+                        if prev_match_end != curr_match_end
+                        {
+                            // go to next node
+                            cur_offset = self.next_tab[cur_offset % BLOCK_SIZE] as usize;
+                            first_match_byte = cur_offset >> FIRST_BYTE_OFFSET;
+                            cur_offset &= (1 << FIRST_BYTE_OFFSET) - 1;
+
+                            depth -= 1;
+                            continue;
+                        }
+                    }
+                }
+                // extend
+                let new_match_length =
+                    unsafe { count(bytes.get_unchecked(cur_offset..), curr_start) };
+
+                let diff = start - cur_offset;
+
+                if new_match_length >= self.min_length && new_match_length > sequence.ml && diff > 3
+                {
+                    sequence.ml = new_match_length;
+                    sequence.ol = diff;
+                    sequence.start = start - literal_length;
+
+                    match_found = true;
+
+                    if new_match_length > self.nice_length
+                    {
+                        return true;
+                    }
+                }
+                // go to next node
+                cur_offset = self.next_tab[cur_offset % BLOCK_SIZE] as usize;
+                first_match_byte = cur_offset >> FIRST_BYTE_OFFSET;
+                cur_offset &= (1 << FIRST_BYTE_OFFSET) - 1;
+
+                depth -= 1;
+            }
         }
-        // We have a previous occurrence
-        // Go find your match
-        self.find_match(source, hash, window_pos, num_literals, sequence)
+        return match_found;
     }
-    fn find_match(
-        &mut self, source: &[u8], hash: usize, window_position: usize, num_literals: usize,
-        seq: &mut EncodeSequence
-    ) -> bool
+
+    #[inline(always)]
+    pub fn advance_four_match(&mut self, window_start: &[u8], mut start: usize, mut length: usize)
     {
-        let list = self.table.get(hash).unwrap();
-        let searches_to_perform = min(list.len(), self.maximum_depth);
-
-        let mut l_cost = 1;
-        l_cost += usize::from(num_literals > 7)
-            + ((usize::BITS - num_literals.leading_zeros()) / 8) as usize;
-
-        let mut valid_seq = false;
-
-        let previous_match_start = &source[window_position..];
-
-        // last elements contains most recent match, so we run from that side
-        // to ensure we search the nearest offset first
-        for previous_offset in list.iter().rev().take(searches_to_perform)
+        if (start + length + 100) < window_start.len()
         {
-            let offset = *previous_offset as usize;
-
-            if offset == window_position || offset == 0
+            let mut hash4 = self.next_hash[1];
+            loop
             {
-                continue;
+                unsafe {
+                    let next_window = window_start.as_ptr().add(start + 1);
+
+                    let curr_byte =
+                        u32::from(*window_start.get_unchecked(start)) << FIRST_BYTE_OFFSET;
+
+                    self.next_tab[start % BLOCK_SIZE] = self.hc_tab[hash4 % HASH_FOUR_SIZE];
+                    self.hc_tab[hash4 % HASH_FOUR_SIZE] = curr_byte | (start as u32);
+                    start += 1;
+                    //  compute the next hash codes
+                    hash4 = v_hash::<4>(next_window, HASH_FOUR_LOG_SIZE) as usize;
+                    length -= 1;
+
+                    if length <= 0
+                    {
+                        break;
+                    }
+                }
             }
-
-            let curr_match = count(previous_match_start, &source[offset..]);
-
-            if curr_match < GLZ_MIN_MATCH
-            {
-                continue;
-            }
-            let curr_offset = window_position - offset;
-            let new_cost = l_cost + estimate_header_cost(curr_match, curr_offset) as usize;
-            // new cost
-            let nc = curr_match as isize - new_cost as isize;
-            // old cost
-            let oc = seq.ml as isize - seq.cost as isize;
-
-            // dbg!(
-            //     num_literals,
-            //     new_cost,
-            //     curr_offset,
-            //     curr_match,
-            //     window_position
-            // );
-            // eprintln!();
-
-            if nc > oc
-            {
-                seq.cost = new_cost;
-                seq.ll = num_literals;
-                seq.ml = curr_match;
-                seq.ol = curr_offset;
-
-                valid_seq = true;
-
-                // // good enough match
-                // if nc > 100
-                // {
-                //     break;
-                // }
-            }
+            self.next_hash[1] = hash4 as usize;
+            prefetch(self.hc_tab.as_ptr(), hash4);
         }
-        self.table[hash].push(window_position as u32);
-        valid_seq
     }
-}
-
-pub fn estimate_header_cost(ml: usize, offset: usize) -> u32
-{
-    let mut off_cost = 1;
-    let mut ml_cost = 0;
-
-    let token_match = usize::from(GLZ_MIN_MATCH) + 7;
-
-    ml_cost += u32::from(ml > token_match) + u32::from((usize::BITS - ml.leading_zeros()) >> 3);
-    off_cost += u32::from((usize::BITS - offset.leading_zeros()) >> 3);
-
-    ml_cost + off_cost
 }
 
 #[test]

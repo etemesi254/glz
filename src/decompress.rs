@@ -161,15 +161,15 @@ pub fn decode_sequences(
             // that is intentional.
             loop
             {
-                fixed_copy_within::<TOKEN_MATCH_LENGTH>(output, src_position, dst_position);
-
-                src_position += offset;
-                dst_position += offset;
-
                 if dst_position > output_offset + match_length
                 {
                     break;
                 }
+
+                fixed_copy_within::<TOKEN_MATCH_LENGTH>(output, src_position, dst_position);
+
+                src_position += offset;
+                dst_position += offset;
             }
             // overlapping match
         }
@@ -201,8 +201,6 @@ pub fn decode_sequences(
                 ml_copy = ml_copy.wrapping_sub(TOKEN_MATCH_LENGTH);
             }
         }
-        // dbg!(literal_length, match_length, offset);
-        // println!();
 
         output_offset += match_length;
     }
