@@ -12,8 +12,16 @@
 - Offsets: use `encode_mod`, to form the full offset, remember to add token bytes and appropriate shift
 - Match length, uses `encode_mod` ,to form full match length, add minimum match length allowed (3).
 
+## Decode sequence
+ - Decode token.
+ - If literal in token is `7` add full length by decoding via `encode_mod`.
+ - Copy raw literals from compressed buffer to uncompressed buffer, the length is given by the above decoded literal length
+ - Decode offset via `encode_mod`, shift by one and add  the token offset.
+ - Decode match length, if match token is `7`, decode via `encode_mod`, add `+3` for min match
+ - Copy match.
+ - Decode new token... 
 
-# `encode_mod`
+## `encode_mod`
 
 ```Rust
 /// Returns the decoded bytes and bytes consumed from encode-mod.
